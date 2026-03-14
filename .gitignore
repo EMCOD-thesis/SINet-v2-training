@@ -1,0 +1,8 @@
+ACD1K
+MSC1K
+pretrained.pth
+sinetv2_fine_tuned.pth
+sinetv2_fine_tuned.onnx
+sinetv2_fine_tuned.onnx.data
+test.py
+test

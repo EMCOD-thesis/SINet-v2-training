@@ -1,0 +1,3 @@
+[submodule "SINet-V2"]
+	path = SINet-V2
+	url = https://github.com/GewelsJI/SINet-V2.git
