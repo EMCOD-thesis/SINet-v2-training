@@ -3,21 +3,21 @@ import cv2
 import sys
 import random
 import torch
-import numpy as np
+import numpy
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from pathlib import Path
-import multiprocessing as mp
+import multiprocessing
 from dataclasses import dataclass
 from torch.utils.data import Dataset, DataLoader
 from torch.amp import autocast, GradScaler
 from torch.nn.utils import clip_grad_norm_
-import albumentations as A
+import albumentations
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 import onnx
-import onnxruntime as ort
+import onnxruntime
 
 SINET_ROOT = Path(__file__).resolve().parent / "SINet-V2"
 sys.path.insert(0, str(SINET_ROOT))
@@ -34,19 +34,17 @@ class Config:
     batch_size:           int = 36
     num_epochs:           int = 100
     learning_rate:      float = 1e-4
-    weight_decay:       float = 1e-4
-    grad_clip_norm:     float = 0.5
     num_workers:        int   = 4
     channel:            int   = 32
     opset:              int   = 18
-    seed:               int   = 23
+    seed:               int   = 24
     amp:                bool  = True
     eval_threshold:     float = 0.5
 config = Config()
 
 def set_seed(seed: int):
     random.seed(seed)
-    np.random.seed(seed)
+    numpy.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
@@ -100,7 +98,7 @@ class SegmentationDataset(Dataset):
                 f"image={image.shape[:2]}, mask={mask.shape[:2]}"
             )
             mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
-        mask = (mask > 127).astype(np.float32)
+        mask = (mask > 127).astype(numpy.float32)
         if self.transform:
             aug = self.transform(image=image, mask=mask)
             image = aug["image"]
@@ -112,31 +110,18 @@ class SegmentationDataset(Dataset):
             mask = mask.unsqueeze(0)
         return image, mask.float()
     
-train_transform = A.Compose([
-    A.Resize(config.input_h, config.input_w),
-    A.HorizontalFlip(p=0.4),
-    A.VerticalFlip(p=0.1),
-    A.Affine(
-        translate_percent={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
-        scale=(0.85, 1.15),
-        rotate=(-15, 15),
-        shear=(-5, 5),
-        interpolation=cv2.INTER_LINEAR,
-        mask_interpolation=cv2.INTER_NEAREST,
-        border_mode=cv2.BORDER_REFLECT_101,
-        p=0.2,
-    ),
-    A.OneOf([
-        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=1.0),
-        A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=1.0),
-        A.GaussNoise(std_range=(0.02, 0.06), p=1.0),
-    ], p=0.2),
-    A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+train_transform = albumentations.Compose([
+    albumentations.HorizontalFlip(p=0.5),
+    albumentations.Resize(config.input_h, config.input_w),
+    albumentations.Rotate(limit=15, interpolation=cv2.INTER_CUBIC, border_mode=cv2.BORDER_CONSTANT, p=0.2),
+    albumentations.ColorJitter(brightness=(0.5, 1.5), contrast=(0.5, 1.5), saturation=(0.0, 2.0), hue=0.0, p=0.5),
+    albumentations.Sharpen(alpha=(0.2, 0.5), lightness=(0.5, 1.5), p=0.5),
+    albumentations.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ToTensorV2(),
 ])
-val_transform = A.Compose([
-    A.Resize(config.input_h, config.input_w),
-    A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+val_transform = albumentations.Compose([
+    albumentations.Resize(config.input_h, config.input_w),
+    albumentations.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ToTensorV2(),
 ])
 
@@ -176,9 +161,9 @@ def structure_loss(pred, mask):
     pasted from SINet-v2/myTrain_Val.py w small bugfix
     """
     weit = 1 + 5 * torch.abs(
-        F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask
+        functional.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask
     )
-    wbce = F.binary_cross_entropy_with_logits(pred, mask, reduction='none')
+    wbce = functional.binary_cross_entropy_with_logits(pred, mask, reduction='none')
     wbce = (weit * wbce).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
 
     pred = torch.sigmoid(pred)
@@ -248,11 +233,7 @@ def main():
         drop_last=False,
     )
 
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, base_model.parameters()),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-    )
+    optimizer = torch.optim.Adam(base_model.parameters(), lr=config.learning_rate)
     scheduler = optim.lr_scheduler.StepLR(
         optimizer,
         step_size=50,
@@ -274,12 +255,13 @@ def main():
                 total_loss = multi_output_structure_loss(outputs, masks)
             scaler.scale(total_loss).backward()
             scaler.unscale_(optimizer)
-            clip_grad_norm_(base_model.parameters(), max_norm=config.grad_clip_norm)
+            for p in base_model.parameters():
+                if p.grad is not None:
+                    p.grad.data.clamp_(-0.5, 0.5)
             scaler.step(optimizer)
             scaler.update()
             running_train_loss += float(total_loss.detach().cpu())
             train_bar.set_postfix(loss=f"{total_loss.item():.4f}")
-        avg_train_loss = running_train_loss / max(len(train_loader), 1)
 
         base_model.eval()
         running_val_total_loss = 0.0
@@ -306,12 +288,8 @@ def main():
                 val_mae.append(m["mae"])
                 val_soft_dice.append(s_dice)
                 val_bar.set_postfix(final_loss=f"{val_final_loss.item():.4f}", soft_dice=f"{s_dice:.4f}", mae=f"{m['mae']:.4f}",)
-        avg_val_total_loss = running_val_total_loss / max(len(val_loader), 1)
-        avg_val_final_loss = running_val_final_loss / max(len(val_loader), 1)
-        mean_iou = float(np.mean(val_iou)) if val_iou else 0.0
-        mean_dice = float(np.mean(val_dice)) if val_dice else 0.0
-        mean_mae = float(np.mean(val_mae)) if val_mae else 1.0
-        mean_soft_dice = float(np.mean(val_soft_dice)) if val_soft_dice else 0.0
+        mean_mae = float(numpy.mean(val_mae)) if val_mae else 1.0
+        mean_soft_dice = float(numpy.mean(val_soft_dice)) if val_soft_dice else 0.0
         val_score = mean_soft_dice - mean_mae
         scheduler.step()
         if val_score > best_score:
@@ -338,7 +316,7 @@ def main():
         )
     onnx_model = onnx.load(config.onnx_path)
     onnx.checker.check_model(onnx_model)
-    ort_session = ort.InferenceSession(
+    ort_session = onnxruntime.InferenceSession(
         config.onnx_path,
         providers=["CPUExecutionProvider"]
     )
@@ -348,5 +326,5 @@ def main():
     print("Output shape:", ort_outputs[0].shape)
 
 if __name__ == "__main__":
-    mp.freeze_support()
+    multiprocessing.freeze_support()
     main()
