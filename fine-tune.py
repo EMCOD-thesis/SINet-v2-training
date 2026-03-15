@@ -13,8 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 import albumentations
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
-import onnx
-import onnxruntime
+
 
 SINET_ROOT = Path(__file__).resolve().parent / "SINet-V2"
 sys.path.insert(0, str(SINET_ROOT))
@@ -204,17 +203,6 @@ def structure_loss(pred, mask):
     wiou = 1 - (inter + 1) / (union - inter + 1)
 
     return (wbce + wiou).mean()
-
-class FinalOutputWrapper(nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-
-    def forward(self, x):
-        out = self.model(x)
-        if isinstance(out, (list, tuple)):
-            return out[-1]
-        return out
     
 def load_pretrained(model: nn.Module, ckpt_path: str):
     if not ckpt_path:
@@ -328,34 +316,6 @@ def main():
             best_mae = mean_mae
             torch.save(base_model.state_dict(), config.best_model_path)
     print("training finished")
-
-    base_model.cpu()
-    base_model.load_state_dict(torch.load(config.best_model_path, map_location="cpu"))
-    base_model.eval()
-    export_model = FinalOutputWrapper(base_model).eval()
-    dummy_input = torch.randn(1, 3, config.input_h, config.input_w, dtype=torch.float32)
-    with torch.no_grad():
-        torch.onnx.export(
-            export_model,
-            dummy_input,
-            config.onnx_path,
-            export_params=True,
-            opset_version=config.opset,
-            do_constant_folding=True,
-            input_names=["input"],
-            output_names=["mask_logits"],
-            dynamic_axes=None,
-        )
-    onnx_model = onnx.load(config.onnx_path)
-    onnx.checker.check_model(onnx_model)
-    ort_session = onnxruntime.InferenceSession(
-        config.onnx_path,
-        providers=["CPUExecutionProvider"]
-    )
-    ort_inputs = {ort_session.get_inputs()[0].name: dummy_input.numpy()}
-    ort_outputs = ort_session.run(None, ort_inputs)
-    print("ONNX model checked and inference tested successfully")
-    print("Output shape:", ort_outputs[0].shape)
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
