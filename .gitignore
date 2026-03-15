@@ -1,6 +1,9 @@
 ACD1K
+CPD1K
 MSC1K
+mixed
 pretrained.pth
+res2net50.pth
 sinetv2_fine_tuned.pth
 sinetv2_fine_tuned.onnx
 sinetv2_fine_tuned.onnx.data
